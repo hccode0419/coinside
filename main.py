@@ -2,33 +2,18 @@
 #                                                                                                    #
 #                                                                                                    #
 #                                                                                                    #
-#                            변동성 돌파전략 이동평균선을 이용한 자동매매 프로그램                       # 
+#                            변동성 돌파전략과 이동평균선을 이용한 자동매매 프로그램                       # 
 #                                                                                                    #
 #                                                                                                    #      
 #                                                                                                    #
 ######################################################################################################
-''' 
-toDO
-1. 가상머니 만들기
-  가) 변수 지정
-    1) 포지션에 진입한 총 가격 : 코인이 변화하는 가겨에 따라 변화해야함 
-    2) 현재 계좌에 남아있는 돈
-    3) 
-    
-2. 초마다 가져와서 청산 조건에서 청산하기
-
-
-'''
 import ccxt
 import pandas as pd
 import time
-import datetime
 import math
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from openpyxl import Workbook
-from openpyxl.styles import PatternFill
 
+
+# apiKey.txt 파일에서 binance에서 발급받은 apikey와 비밀번호 key 저장
 with open("apiKey.txt") as f:
     lines = f.readlines()
     apiKey = lines[0].strip()
@@ -57,9 +42,11 @@ def dataFrame():
     df.set_index("datetime", inplace=True)
     df["100ma"] = df["close"].rolling(100).mean()
     df["200ma"] = df["close"].rolling(200).mean()
-    df["14ma"] = df["close"].rolling(14).mean()
+    df["12ma"] = df["close"].rolling(12).mean()
+    df["12ma_3"] = df["close"].shift(3).rolling(12).mean()
     df["30ma"] = df["close"].rolling(30).mean()
     df["30ma_3"] = df["close"].shift(3).rolling(30).mean()
+  
 
     # 현재 계좌에 있는 돈
     df["balance"] = USDTBalance
@@ -67,6 +54,11 @@ def dataFrame():
     # 거래 총액
     df["tradeAmount"] = tradeAmount
     
+    # diffMa
+    df["diffMa"] = df["30ma"].iloc[-1] - df["12ma"].iloc[-1]
+    
+    # preDiffMa
+    df["preDiffMa"] = df["30ma_3"].iloc[-1] - df["12ma_3"].iloc[-1]
     return df, amount
 
 # 변동성 돌판전략
@@ -97,13 +89,13 @@ def enterPosition(exchange, symbol, curPrice, target, amount, position):
         position["amount"] = amount
         tradeAmount = curPrice * amount
         print("롱")
-        exchange.create_market_buy_order(symbol=symbol, amount=amount)
+        exchange.create_limit_buy_order(symbol=symbol, amount=amount, price = curPrice)
     elif target== -1:
         position["type"] = "short"
         position["amount"] = amount
         tradeAmount = curPrice * amount
         print("숏")
-        exchange.create_market_sell_order(symbol=symbol, amount=amount)
+        exchange.create_limit_sell_order(symbol=symbol, amount=amount, price = curPrice)
     else:
         print("매수안함")
     return tradeAmount
@@ -114,11 +106,11 @@ def exitPosition(exchange, symbol, curPrice, position):
     tradeAmount = curPrice * amount
     if position["type"] =="long":
         print("롱 포지션 종료")
-        exchange.create_market_sell_order(symbol=symbol, amount=amount)
+        exchange.create_limit_sell_order(symbol=symbol, amount=amount, price = curPrice)
         position["type"] = None
     elif position["type"] == "short":
         print("숏 포지션 종료")
-        exchange.create_market_buy_order(symbol=symbol, amount=amount)
+        exchange.create_limit_buy_order(symbol=symbol, amount=amount, price = curPrice)
         position["type"] = None
     return tradeAmount
 
@@ -169,16 +161,23 @@ while(1):
         writer.sheets['Sheet1'].column_dimensions['M'].width = 15
         
 
+    if df["diffMa"].iloc[-1] < 0:
+        df.loc[df.index[-1], "diffMa"] *= -1
+        # df["diffMa"].iloc[-1] = df["diffMa"].iloc[-1] * -1 
+    if df["preDiffMa"].iloc[-1] < 0:
+        df.loc[df.index[-1], "preDiffMa"] *= -1
+        # df["preDiffMa"].iloc[-1] = df["preDiffMa"].iloc[-1] * -1
+
+    targetByDiffMa = df["preDiffMa"].iloc[-1] * 0.5
+
     # 엔트리 조건
     # VB && baseTarget && realTarget && position
-    isLongTarget = (curPrice > longTargetByVB) & (df["200ma"].iloc[-1] < df["100ma"].iloc[-1]) & (df["30ma"].iloc[-1] < df["14ma"].iloc[-1]) &  (position["type"] == None)
-    isShortTarget = (curPrice < shortTargetByVB) & (df["200ma"].iloc[-1] > df["100ma"].iloc[-1]) & (df["30ma"].iloc[-1] > df["14ma"].iloc[-1]) & (position["type"] == None)
+    isLongTarget = (curPrice > longTargetByVB) & (df["200ma"].iloc[-1] < df["100ma"].iloc[-1]) & (df["30ma"].iloc[-1] < df["12ma"].iloc[-1]) & (targetByDiffMa < df["diffMa"].iloc[-1]) & (position["type"] == None)
+    isShortTarget = (curPrice < shortTargetByVB) & (df["200ma"].iloc[-1] > df["100ma"].iloc[-1]) & (df["30ma"].iloc[-1] > df["12ma"].iloc[-1]) & (targetByDiffMa < df["diffMa"].iloc[-1]) & (position["type"] == None)
  
     # 스탑 프로핏 조건
-    isLongEnd = ((entryPrice + entryPrice * 0.008 < curPrice) or (entryPrice - entryPrice * 0.004 > curPrice)) & (position["type"] == "long") 
-    isShortEnd = ((entryPrice - entryPrice * 0.008 > curPrice) or (entryPrice + entryPrice * 0.004 < curPrice)) & (position["type"] == "short")
-
-
+    isLongEnd = ((entryPrice + entryPrice * 0.005 < curPrice) or (entryPrice - entryPrice * 0.005 > curPrice)) & (position["type"] == "long") 
+    isShortEnd = ((entryPrice - entryPrice * 0.005 > curPrice) or (entryPrice + entryPrice * 0.005 < curPrice)) & (position["type"] == "short")
 
     # 시간 출력
     print("현재가 : ", curPrice)
@@ -187,17 +186,17 @@ while(1):
     print("롱 타겟 :", curPrice > longTargetByVB)
     print("숏 타겟 :", curPrice < shortTargetByVB)
     print("진입 가격 :", entryPrice)
+    print(f"targetDiffMa : {targetByDiffMa},  difffMa : {df['diffMa'].iloc[-1]}", targetByDiffMa < df["diffMa"].iloc[-1])
     print("base 진입 조건(False : short / True : long) : ", df["200ma"].iloc[-1], df["100ma"].iloc[-1], (df["200ma"].iloc[-1] < df["100ma"].iloc[-1])) 
-    print("serve 진입 조건(False : short / True : long): ", df["30ma"].iloc[-1], df["14ma"].iloc[-1], df["30ma"].iloc[-1] < df["14ma"].iloc[-1])
+    print("serve 진입 조건(False : short / True : long): ", df["30ma"].iloc[-1], df["12ma"].iloc[-1], df["30ma"].iloc[-1] < df["12ma"].iloc[-1])
     if position["type"] == None:
         pass
     elif position["type"] == "long":
-        print("익절 : {}, 손절 : {}".format(entryPrice + entryPrice * 0.008, entryPrice - entryPrice * 0.004))
+        print("익절 : {}, 손절 : {}".format(entryPrice + entryPrice * 0.005, entryPrice - entryPrice * 0.005))
     elif position["type"] == "short":
-        print("익절 : {}, 손절 : {}".format(entryPrice - entryPrice * 0.008, entryPrice + entryPrice * 0.004))
+        print("익절 : {}, 손절 : {}".format(entryPrice - entryPrice * 0.005, entryPrice + entryPrice * 0.005))
     print("포지션 타입", position["type"])
 
-  
     # Long 포지션 엔트리
     if isLongTarget:
         entryPrice = curPrice
